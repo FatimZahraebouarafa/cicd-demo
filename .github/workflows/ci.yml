@@ -75,6 +75,16 @@ jobs:
           IMAGE_NAME="ghcr.io/${REPO,,}"
           echo "IMAGE_NAME=$IMAGE_NAME" >> "$GITHUB_ENV"
 
+      - name: Reconstruire la référence
+        run: |
+          REPO="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          echo "IMAGE_NAME=ghcr.io/$REPO" >> "$GITHUB_ENV"
+
+      - name: Contrôler la référence
+        run: |
+          test -n "$IMAGE_NAME"
+          echo "IMAGE_NAME=$IMAGE_NAME"
+
       - name: Se connecter à GHCR
         uses: docker/login-action@v3
         with:
@@ -110,58 +120,3 @@ jobs:
           REPO="${{ github.repository }}"
           IMAGE_NAME="ghcr.io/${REPO,,}"
           echo "IMAGE_NAME=$IMAGE_NAME" >> "$GITHUB_ENV"
-
-      # 2
-      - name: Se connecter à GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # 3
-      - name: Télécharger l’image du commit
-        run: docker pull "$IMAGE_NAME:$GITHUB_SHA"
-
-      # 4
-      - name: Démarrer le conteneur staging
-        run: |
-          docker run -d \
-            -p 3000:3000 \
-            --name cicd-demo-staging \
-            "$IMAGE_NAME:$GITHUB_SHA"
-
-      # 5
-      - name: Attendre l’application staging
-        run: |
-          for i in {1..10}; do
-            if curl --fail --silent --show-error \
-              --connect-timeout 2 --max-time 5 \
-              http://localhost:3000/api/health; then
-              exit 0
-            fi
-            sleep 2
-          done
-
-          echo "L’application staging ne répond pas."
-          exit 1
-
-      # 6
-      - name: Vérifier le calcul TTC en staging
-        run: |
-          curl --fail --silent --show-error --max-time 10 \
-            "http://localhost:3000/api/calcul/ttc?prix=100&tva=20" \
-            | grep "120"
-
-      # 7
-      - name: Afficher les logs du conteneur
-        if: always()
-        run: |
-          if docker container inspect cicd-demo-staging > /dev/null 2>&1; then
-            docker logs cicd-demo-staging
-          fi
-
-      # 8
-      - name: Nettoyer le conteneur staging
-        if: always()
-        run: docker rm -f cicd-demo-staging || true
