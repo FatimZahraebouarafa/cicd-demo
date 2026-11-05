@@ -19,7 +19,7 @@ jobs:
           node-version: '22'
         
       - name: Installer les dépendances
-        run: npm install
+        run: npm ci
       
       - name : Vérifier le code 
         run : npm run lint
@@ -52,11 +52,11 @@ jobs:
         if : always()
         run : docker rm -f cicd-demo || true
 
-      - name : Preparer le nom l'image
-        run : |
-          REPO="${{ github.repository  }}"
-          IMAGE_NAME="ghcr.io/${REPO}"
-          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+      - name: Préparer le nom de l’image
+        run: |
+          REPO="${{ github.repository }}"
+          IMAGE_NAME="ghcr.io/${REPO,,}"
+          echo "IMAGE_NAME=$IMAGE_NAME" >> "$GITHUB_ENV"
 
       - name : Connection a GHCR
         uses: docker/login-action@v3
