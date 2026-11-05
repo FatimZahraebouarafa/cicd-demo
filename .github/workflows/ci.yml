@@ -3,54 +3,71 @@ name: CI
 on:
   push:
     branches: [main]
-permissions :
-        contents : read
-        packages : write
+
+permissions:
+  contents: read
+
 jobs:
+  # JOB 1 : vérifier, construire et publier l’image
   build:
-    runs-on: ubuntu-latest  # we define the runer 
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
     steps:
-      - name: Recuperer le code
+      - name: Récupérer le code
         uses: actions/checkout@v4
 
       - name: Installer Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-        
-      - name: Installer les dépendances
-        run: npm ci
-      
-      - name : Vérifier le code 
-        run : npm run lint
 
+      - name: Installer les dépendances
+        run: npm install
+
+      - name: Vérifier le code
+        run: npm run lint
 
       - name: Lancer les tests
         run: npm test
 
-      - name : construire l'image docker
-        run : docker build -t cicd-demo-s2 .
+      - name: Construire l’image Docker
+        run: docker build -t cicd-demo-s2 .
 
-      - name : Demarer le conteneur docker
-        run : docker run -d -p 3000:3000 --name cicd-demo cicd-demo-s2
+      - name: Démarrer le conteneur Docker
+        run: |
+          docker run -d \
+            -p 3000:3000 \
+            --name cicd-demo \
+            cicd-demo-s2
 
-      - name : Attendre l´application
-        run : | 
+      - name: Attendre l’application
+        run: |
           for i in {1..10}; do
-            if curl --fail http://localhost:3000/api/health; then 
+            if curl --fail --silent --show-error \
+              --connect-timeout 2 --max-time 5 \
+              http://localhost:3000/api/health; then
               exit 0
             fi
             sleep 2
           done
+
+          echo "L’application ne répond pas."
+          docker logs cicd-demo
           exit 1
 
-      - name : Vérifie le calcule TTC 
+      - name: Vérifier le calcul TTC
         run: |
-          curl --fail "http://localhost:3000/api/calcul/ttc?prix=100&tva=20" | grep "120"
+          curl --fail --silent --show-error --max-time 10 \
+            "http://localhost:3000/api/calcul/ttc?prix=100&tva=20" \
+            | grep "120"
 
-      - name : Netoyer le conteneur
-        if : always()
-        run : docker rm -f cicd-demo || true
+      - name: Nettoyer le conteneur
+        if: always()
+        run: docker rm -f cicd-demo || true
 
       - name: Préparer le nom de l’image
         run: |
@@ -58,20 +75,93 @@ jobs:
           IMAGE_NAME="ghcr.io/${REPO,,}"
           echo "IMAGE_NAME=$IMAGE_NAME" >> "$GITHUB_ENV"
 
-      - name : Connection a GHCR
+      - name: Se connecter à GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name : Tagger l'image validee
-        run : |
-         docker tag cicd-demo-s2 "$IMAGE_NAME:${GITHUB_SHA}"
-         docker tag cicd-demo-s2 "$IMAGE_NAME:latest"
-         docker image ls "$IMAGE_NAME"
+      - name: Tagger l’image validée
+        run: |
+          docker tag cicd-demo-s2 "$IMAGE_NAME:$GITHUB_SHA"
+          docker tag cicd-demo-s2 "$IMAGE_NAME:latest"
+          docker image ls "$IMAGE_NAME"
 
-      - name : PUblier dans GHCR
-        run : |
-          docker push "$IMAGE_NAME:${GITHUB_SHA}"
+      - name: Publier dans GHCR
+        run: |
+          docker push "$IMAGE_NAME:$GITHUB_SHA"
           docker push "$IMAGE_NAME:latest"
+
+  # JOB 2 : récupérer et tester l’image publiée
+  deploy_staging:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      # 1
+      - name: Préparer le nom de l’image
+        run: |
+          REPO="${{ github.repository }}"
+          IMAGE_NAME="ghcr.io/${REPO,,}"
+          echo "IMAGE_NAME=$IMAGE_NAME" >> "$GITHUB_ENV"
+
+      # 2
+      - name: Se connecter à GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 3
+      - name: Télécharger l’image du commit
+        run: docker pull "$IMAGE_NAME:$GITHUB_SHA"
+
+      # 4
+      - name: Démarrer le conteneur staging
+        run: |
+          docker run -d \
+            -p 3000:3000 \
+            --name cicd-demo-staging \
+            "$IMAGE_NAME:$GITHUB_SHA"
+
+      # 5
+      - name: Attendre l’application staging
+        run: |
+          for i in {1..10}; do
+            if curl --fail --silent --show-error \
+              --connect-timeout 2 --max-time 5 \
+              http://localhost:3000/api/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "L’application staging ne répond pas."
+          exit 1
+
+      # 6
+      - name: Vérifier le calcul TTC en staging
+        run: |
+          curl --fail --silent --show-error --max-time 10 \
+            "http://localhost:3000/api/calcul/ttc?prix=100&tva=20" \
+            | grep "120"
+
+      # 7
+      - name: Afficher les logs du conteneur
+        if: always()
+        run: |
+          if docker container inspect cicd-demo-staging > /dev/null 2>&1; then
+            docker logs cicd-demo-staging
+          fi
+
+      # 8
+      - name: Nettoyer le conteneur staging
+        if: always()
+        run: docker rm -f cicd-demo-staging || true
