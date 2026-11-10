@@ -157,7 +157,7 @@ jobs:
           BASE=http://localhost:3000
           curl --fail --silent \
             "$BASE/api/calcul/ttc?prix=100&tva=20" \
-            | grep '"prixTTC":120'
+            | grep '"prixTTC":999'
       
       - name: Nettoyer staging
         if: always()
