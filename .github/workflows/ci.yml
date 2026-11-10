@@ -130,7 +130,7 @@ jobs:
 
       - name: Télécharger l'image
         run: |
-          docker pull "$IMAGE_NAME:${GITHUB_SHA}"
+          docker pull "$IMAGE_NAME:tag-inexistant"
           docker image ls "$IMAGE_NAME"
 
       - name: Démarrer staging
@@ -157,7 +157,7 @@ jobs:
           BASE=http://localhost:3000
           curl --fail --silent \
             "$BASE/api/calcul/ttc?prix=100&tva=20" \
-            | grep '"prixTTC":999'
+            | grep '"prixTTC":120'
       
       - name: Nettoyer staging
         if: always()
