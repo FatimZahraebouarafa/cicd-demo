@@ -4,51 +4,88 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: tag de l'image
+        description: Tag de l'image
         required: true
+        type: string
       environment:
-        description: cible
+        description: Cible
         type: choice
         options: [staging, production]
         default: staging
+      test_local:
+        description: Tester une image locale sur EC2
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-ec2
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
-    permissions:
-      contents: read
-      packages: read
+    env:
+      TAG: ${{ inputs.tag }}
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
 
     steps:
-      - name: Reconstruire la référence
+      - name: Valider le tag
+        run: |
+          if [[ ! "$TAG" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]]; then
+            echo "Tag invalide"
+            exit 1
+          fi
+
+      - name: Déployer et vérifier la version sur VmFati
         env:
-          TAG: ${{ inputs.tag }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.KNOWN_HOSTS }}
+          TEST_LOCAL: ${{ inputs.test_local }}
         run: |
-          REPO="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
-          echo "IMAGE_NAME=ghcr.io/$REPO" >> "$GITHUB_ENV"
-          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          SCRIPT=deploy.sh
+          if [[ "$TEST_LOCAL" == "true" ]]; then
+            if [[ "$TAG" != "s5-test-ko" ]]; then
+              echo "Le test local exige le tag s5-test-ko"
+              exit 1
+            fi
+            SCRIPT=deploy-test-local.sh
+          fi
 
-      - name: Télécharger le tag demandé
-        run: docker pull "$IMAGE_NAME:$TAG"
+          umask 077
+          install -d -m 700 ~/.ssh
+          trap 'rm -f ~/.ssh/s5_deploy' EXIT
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/s5_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
 
-      - name: Démarrer
+          ssh -i ~/.ssh/s5_deploy \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=10 \
+            "$SSH_USER@$SSH_HOST" \
+            "bash -s -- '$SCRIPT' '$TAG'" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/atlas
+          "./$1" "$2"
+          source ./image.env
+          IMAGE_ACTIVE=$(docker inspect --format '{{.Config.Image}}' atlas-app)
+          printf 'Image en service : %s\n' "$IMAGE_ACTIVE"
+          test "$IMAGE_ACTIVE" = "$IMAGE_NAME:$2"
+          test "$(cat current_tag)" = "$2"
+          curl -fsS --max-time 5 http://localhost/api/health
+          printf '\n'
+          REMOTE
+
+      - name: Vérifier l'accès HTTP public
         run: |
-          docker run -d --name cicd-deploy -p 3000:3000 "$IMAGE_NAME:$TAG"
-
-      - name: Vérifier
-        run: |
-          URL=http://localhost:3000
-          for i in {1..15}; do
-            curl --fail --silent "$URL/api/health" > /dev/null && break
-            sleep 2
-          done
-          echo "image déployée : $IMAGE_NAME:$TAG"
-          curl --fail --silent "$URL/"; echo
-          curl --fail --silent "$URL/api/calcul/ttc?prix=100&tva=20"; echo
-
-      - name: Nettoyer
-        if: always()
-        run: |
-          docker logs cicd-deploy || true
-          docker rm -f cicd-deploy || true
+          curl -fsS --connect-timeout 5 --max-time 10 \
+            "http://$SSH_HOST/api/health"
+          printf '\n'
+          curl -fsS --connect-timeout 5 --max-time 10 \
+            "http://$SSH_HOST/api/calcul/ttc?prix=100&tva=20"
+          printf '\n'
